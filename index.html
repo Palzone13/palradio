@@ -83,6 +83,13 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
 .quick .key{height:42px;font-size:.95rem;flex:none}
 .key:disabled{opacity:.4;cursor:not-allowed}
 .key.alert{grid-column:1/-1;background:#3a0f0c;border-color:var(--ptt);color:#ff8a80}
+.key.super{grid-column:1/-1;background:var(--ptt);color:#fff;border-color:#ff9a90;font-weight:800}
+#strobe{position:fixed;inset:0;z-index:50;display:grid;place-content:center;gap:8px;background:#ff1f12;color:#fff;font-weight:800;font-size:clamp(1.8rem,8vw,3.4rem);text-align:center;padding:20px;cursor:pointer;animation:strobe .4s steps(1) infinite}
+#strobe[hidden]{display:none}
+#strobe small{font-size:1.1rem;font-weight:600}
+@keyframes strobe{0%{opacity:.8}50%{opacity:.15}}
+body.super .device{animation:shake .14s linear infinite}
+@keyframes shake{25%{transform:translate(-4px,2px) rotate(-.4deg)}75%{transform:translate(4px,-2px) rotate(.4deg)}}
 @keyframes flash{50%{background:#3a0b08;color:#ff6a5c}}
 .device.alerting .screen{animation:flash .5s steps(1) 6}
 .set{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}
@@ -117,7 +124,8 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
   .tabs b{font-size:1.2rem;line-height:1}
 }
 @media (max-width:380px){.chips{grid-template-columns:repeat(4,1fr)}}
-@media (prefers-reduced-motion:reduce){.ptt,.ptt::after,.device.alerting .screen{transition:none;animation:none!important}}
+@media (prefers-reduced-motion:reduce){.ptt,.ptt::after,.device.alerting .screen,#strobe,body.super .device{transition:none;animation:none!important}
+  #strobe{opacity:.75}}
 </style>
 </head>
 <body data-tab="radio">
@@ -158,6 +166,7 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
       <button class="key q" data-t="Say again" disabled>Say again</button>
       <button class="key q" data-t="Need help" disabled>Need help</button>
       <button class="key alert" id="alertBtn" disabled>Send alert to everyone</button>
+      <button class="key super" id="superBtn" disabled>Super alert</button>
     </div>
 
     <input class="name" id="callsign" maxlength="16" placeholder="Your callsign" aria-label="Your callsign">
@@ -176,6 +185,8 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
     </section>
   </aside>
 </div>
+
+<div id="strobe" hidden></div>
 
 <nav class="tabs" aria-label="Sections">
   <button data-tab="radio" aria-selected="true"><b>📻</b>Radio</button>
@@ -413,38 +424,68 @@ function notice(text, force) {
   $("status").textContent = text; clearTimeout(noteTimer);
   noteTimer = setTimeout(() => { if (on && !rx.size && !talking) $("status").textContent = "Channel " + ch + " is open"; }, 5000);
 }
-function sendMsg(text, alert) {
+function sendMsg(text, level) {   // level: 0 message, 1 alert, 2 super alert
   if (!ready || !channel) return;
-  if (alert) { if (Date.now() - lastAlert < 4000) return; lastAlert = Date.now(); }
-  channel.send({ type: "broadcast", event: "msg", payload: { from: myId, name: name(), text, alert: !!alert } });
-  beep(700, 70); addLog("You", 0, (alert ? "ALERT · " : "") + text); notice(alert ? "Alert sent" : "Sent: " + text, true);
+  if (level) { if (Date.now() - lastAlert < (level === 2 ? 10000 : 4000)) return; lastAlert = Date.now(); }
+  channel.send({ type: "broadcast", event: "msg", payload: { from: myId, name: name(), text, alert: !!level, level } });
+  addLog("You", 0, (level === 2 ? "SUPER ALERT · " : level ? "ALERT · " : "") + text);
+  if (level) fireAlert(level, "You"); else beep(700, 70);
+  notice(level === 2 ? "Super alert sent" : level ? "Alert sent" : "Sent: " + text, true);
 }
-function playAlert() {   // three rising siren whoops, then four fast pips
-  try {
-    const c = getCtx(), t0 = c.currentTime + .02;
-    const tone = (type, t, dur, f0, f1, vol) => {
-      const o = c.createOscillator(), g = c.createGain();
-      o.type = type; o.frequency.setValueAtTime(f0, t);
-      if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
-      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + .03);
-      g.gain.setValueAtTime(vol, t + dur - .06); g.gain.linearRampToValueAtTime(0, t + dur);
-      o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + .02);
-    };
-    for (let i = 0; i < 3; i++) tone("sawtooth", t0 + i * .62, .56, 500, 1500, .18);
-    for (let i = 0; i < 4; i++) tone("square", t0 + 1.95 + i * .13, .08, 1900, 1900, .12);
-  } catch (e) {}
+
+// ---- Alert sounds ----
+let alertBus = null, alertTimer = null;
+function toneAt(c, bus, type, t, dur, f0, f1, vol) {
+  const o = c.createOscillator(), g = c.createGain();
+  o.type = type; o.frequency.setValueAtTime(f0, t);
+  if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + .02);
+  g.gain.setValueAtTime(vol, t + Math.max(.03, dur - .05)); g.gain.linearRampToValueAtTime(0, t + dur);
+  o.connect(g); g.connect(bus); o.start(t); o.stop(t + dur + .02);
 }
+function playAlert(c, bus) {   // three rising whoops, then four fast pips
+  const t0 = c.currentTime + .02;
+  for (let i = 0; i < 3; i++) toneAt(c, bus, "sawtooth", t0 + i * .62, .56, 500, 1500, .18);
+  for (let i = 0; i < 4; i++) toneAt(c, bus, "square", t0 + 1.95 + i * .13, .08, 1900, 1900, .12);
+}
+function playSuper(c, bus) {   // about 7 seconds: fast wail, klaxon, laser zaps, pips
+  const t0 = c.currentTime + .02;
+  for (let i = 0; i < 16; i++) { const t = t0 + i * .4; toneAt(c, bus, "sawtooth", t, .2, 450, 2200, .2); toneAt(c, bus, "sawtooth", t + .2, .2, 2200, 450, .2); }
+  for (let i = 0; i < 32; i++) toneAt(c, bus, "square", t0 + i * .2, .1, 140, 140, .14);
+  for (let i = 0; i < 12; i++) toneAt(c, bus, "sawtooth", t0 + .1 + i * .52, .14, 3200, 600, .1);
+  for (let i = 0; i < 8; i++) toneAt(c, bus, "square", t0 + 6.5 + i * .1, .06, 2400, 2400, .14);
+}
+function stopAlert() {
+  try { if (alertBus) { alertBus.gain.setTargetAtTime(0, audioCtx.currentTime, .02); alertBus = null; } } catch (e) {}
+  buzz(0); clearTimeout(alertTimer); document.body.classList.remove("super"); $("device").classList.remove("alerting"); $("strobe").hidden = true;
+}
+function fireAlert(level, who) {
+  stopAlert(); const c = getCtx(); alertBus = c.createGain(); alertBus.connect(master);
+  if (level === 2) {
+    playSuper(c, alertBus); buzz(Array(20).fill([220, 80]).flat());
+    document.body.classList.add("super"); $("strobe").innerHTML = (who === "You" ? "SUPER ALERT SENT" : esc(who) + ": SUPER ALERT") + "<small>Tap to stop</small>"; $("strobe").hidden = false;
+    alertTimer = setTimeout(stopAlert, 7600);
+  } else {
+    playAlert(c, alertBus); buzz([300, 100, 300, 100, 300]); $("device").classList.add("alerting"); alertTimer = setTimeout(stopAlert, 3200);
+  }
+}
+$("strobe").onclick = stopAlert;
+
 function receiveMsg(p) {
   if (!p || p.from === myId || !p.text) return;
-  const who = p.name || "Pal";
-  if (p.alert) {
-    playAlert(); buzz([300, 100, 300, 100, 300]); $("device").classList.add("alerting");
-    setTimeout(() => $("device").classList.remove("alerting"), 3200); notice("ALERT from " + who + "!", true);
-  } else { beep(1100, 70); beep(1500, 70, .09); buzz(30); notice(who + ": " + p.text); }
-  addLog(who, 0, (p.alert ? "ALERT · " : "") + p.text);
+  const who = p.name || "Pal", lvl = p.level || (p.alert ? 1 : 0);
+  if (lvl) { fireAlert(lvl, who); notice((lvl === 2 ? "SUPER ALERT" : "ALERT") + " from " + who + "!", true); }
+  else { beep(1100, 70); beep(1500, 70, .09); buzz(30); notice(who + ": " + p.text); }
+  addLog(who, 0, (lvl === 2 ? "SUPER ALERT · " : lvl ? "ALERT · " : "") + p.text);
 }
-document.querySelectorAll(".q").forEach(b => b.onclick = () => sendMsg(b.dataset.t, false));
-$("alertBtn").onclick = () => sendMsg("Emergency alert", true);
+document.querySelectorAll(".q").forEach(b => b.onclick = () => sendMsg(b.dataset.t, 0));
+$("alertBtn").onclick = () => sendMsg("Emergency alert", 1);
+let armed = false, armTimer = null;
+function disarm() { armed = false; clearTimeout(armTimer); $("superBtn").textContent = "Super alert"; }
+$("superBtn").onclick = () => {
+  if (!armed) { armed = true; $("superBtn").textContent = "Tap again to confirm"; armTimer = setTimeout(disarm, 3000); return; }
+  disarm(); sendMsg("SUPER ALERT", 2);
+};
 
 // ---- Keep screen awake ----
 async function keepAwake() {
