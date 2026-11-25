@@ -79,6 +79,18 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
 @keyframes ring{from{opacity:.8;transform:scale(.9)}to{opacity:0;transform:scale(1.25)}}
 .ptt:disabled{background:#3a1f1c;box-shadow:0 10px 0 #1f0f0d;cursor:not-allowed;color:#ffffff66}
 .hint{margin:0;text-align:center;font-size:.85rem;opacity:.8}
+.quick{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.quick .key{height:42px;font-size:.95rem;flex:none}
+.key:disabled{opacity:.4;cursor:not-allowed}
+.key.alert{grid-column:1/-1;background:#3a0f0c;border-color:var(--ptt);color:#ff8a80}
+@keyframes flash{50%{background:#3a0b08;color:#ff6a5c}}
+.device.alerting .screen{animation:flash .5s steps(1) 6}
+.set{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}
+.set:first-of-type{border-top:0}
+.set input[type=range]{flex:1;max-width:210px;accent-color:#5dff7a}
+.set input[type=checkbox]{width:22px;height:22px;accent-color:#5dff7a}
+.set select,.set button{background:#1f1f1f;border:1.5px solid #444;border-radius:10px;padding:8px 10px;color:var(--text)}
+.note{margin:10px 0 0;color:var(--muted);font-size:.88rem}
 .tabs{display:none}
 
 @media (max-width:820px){
@@ -90,20 +102,22 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
     min-height:calc(100dvh - 140px - env(safe-area-inset-bottom))}
   .antenna,.grille{display:none}
   .chnum{font-size:4.6rem}
-  .bay{flex:1;min-height:230px}
+  .bay{flex:1;min-height:200px}
   .ptt{width:min(230px,62vw)}
   .hint{display:none}
+  .side .card{display:none}
+  body[data-tab=crew] #crew,body[data-tab=calls] #calls,body[data-tab=sound] #sound{display:block}
   body[data-tab=radio] .side{display:none}
-  body[data-tab=crew] .device,body[data-tab=crew] #calls,body[data-tab=calls] .device,body[data-tab=calls] #crew{display:none}
-  body[data-tab=crew] .side,body[data-tab=calls] .side{padding-top:6px}
-  .tabs{display:grid;grid-template-columns:repeat(3,1fr);position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--card);border-top:1.5px solid var(--line);
+  body:not([data-tab=radio]) .device{display:none}
+  body:not([data-tab=radio]) .side{padding-top:6px}
+  .tabs{display:grid;grid-template-columns:repeat(4,1fr);position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--card);border-top:1.5px solid var(--line);
     padding:6px 8px calc(6px + env(safe-area-inset-bottom))}
   .tabs button{background:none;border:0;padding:8px 0;border-radius:12px;font-weight:600;color:var(--muted);display:grid;gap:2px;justify-items:center;font-size:.8rem}
   .tabs button[aria-selected=true]{color:var(--text);background:var(--line)}
   .tabs b{font-size:1.2rem;line-height:1}
 }
 @media (max-width:380px){.chips{grid-template-columns:repeat(4,1fr)}}
-@media (prefers-reduced-motion:reduce){.ptt,.ptt::after{transition:none;animation:none!important}}
+@media (prefers-reduced-motion:reduce){.ptt,.ptt::after,.device.alerting .screen{transition:none;animation:none!important}}
 </style>
 </head>
 <body data-tab="radio">
@@ -138,6 +152,14 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
 
     <div class="bay"><button class="ptt" id="ptt" disabled>Hold to talk</button></div>
 
+    <div class="quick" id="quick" aria-label="Quick messages">
+      <button class="key q" data-t="On my way" disabled>On my way</button>
+      <button class="key q" data-t="Copy that" disabled>Copy that</button>
+      <button class="key q" data-t="Say again" disabled>Say again</button>
+      <button class="key q" data-t="Need help" disabled>Need help</button>
+      <button class="key alert" id="alertBtn" disabled>Send alert to everyone</button>
+    </div>
+
     <input class="name" id="callsign" maxlength="16" placeholder="Your callsign" aria-label="Your callsign">
     <p class="hint">Live while you hold the button. Space bar works too.</p>
   </main>
@@ -145,6 +167,13 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
   <aside class="side">
     <section class="card" id="crew"><h2>On this channel <small id="count"></small></h2><ul class="list" id="roster"><li class="empty">Nobody yet. Power on to join.</li></ul></section>
     <section class="card" id="calls"><h2>Recent calls</h2><ul class="list" id="log"><li class="empty">Nothing heard yet.</li></ul></section>
+    <section class="card" id="sound"><h2>Sound</h2>
+      <div class="set"><label for="vol">Volume</label><input type="range" id="vol" min="0" max="100"></div>
+      <div class="set"><label for="fx">Radio filter</label><input type="checkbox" id="fx"></div>
+      <div class="set"><label for="stat">Static</label><input type="range" id="stat" min="0" max="100"></div>
+      <div class="set"><label for="beepSel">Beep sound</label><span><select id="beepSel"><option value="classic">Classic</option><option value="soft">Soft</option><option value="digital">Digital</option><option value="chirp">Chirp</option></select> <button id="test">Test</button></span></div>
+      <p class="note" id="wakeNote"></p>
+    </section>
   </aside>
 </div>
 
@@ -152,6 +181,7 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
   <button data-tab="radio" aria-selected="true"><b>📻</b>Radio</button>
   <button data-tab="crew" aria-selected="false"><b>👥</b>Crew</button>
   <button data-tab="calls" aria-selected="false"><b>🕘</b>Calls</button>
+  <button data-tab="sound" aria-selected="false"><b>🔊</b>Sound</button>
 </nav>
 
 <script>
@@ -163,6 +193,10 @@ const $ = id => document.getElementById(id);
 const myId = Math.random().toString(36).slice(2, 10);
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+const S = { vol: 85, fx: true, stat: 25, beep: "classic" };
+try { Object.assign(S, JSON.parse(localStorage.getItem("pl_set") || "{}")); } catch (e) {}
+const saveSet = () => { try { localStorage.setItem("pl_set", JSON.stringify(S)); } catch (e) {} };
+let master = null, rxBus = null, fx = null, shaper = null, staticGain = null, noteTimer = null, lastAlert = 0, wl = null;
 let channel = null, ch = 1, on = false, stream = null, recStart = 0, recTimer = null, talking = false;
 let audioCtx = null, analyser = null, meterTimer = null, rxMeter = null, rxLevel = 0;
 let src = null, proc = null, capturing = false, seq = 0, outBuf = [], acc = 0, accN = 0, ph = 0;
@@ -170,6 +204,7 @@ const rx = new Map(); let ready = false;
 function lockPtt() {
   const busy = rx.size > 0 && !talking;
   $("ptt").disabled = !ready || busy;
+  document.querySelectorAll("#quick button").forEach(b => b.disabled = !ready);
   if (!talking) $("ptt").textContent = busy ? "Channel busy" : "Hold to talk";
 }
 
@@ -197,12 +232,43 @@ function avatar(n) {
   const h = [...n].reduce((a, c) => a + c.charCodeAt(0), 0) * 37 % 360;
   return `<span class="av" style="background:hsl(${h} 85% 78%)">${esc(n[0] || "?").toUpperCase()}</span>`;
 }
-function getCtx() { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === "suspended") audioCtx.resume(); return audioCtx; }
-function beep(freq, ms, delay = 0) {
+const curve = new Float32Array(256).map((_, i) => Math.tanh(((i / 255) * 2 - 1) * 2.5));
+function getCtx() {
+  if (!audioCtx) { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); buildAudio(audioCtx); }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+function buildAudio(c) {
+  master = c.createGain(); master.connect(c.destination);
+  const hp = c.createBiquadFilter(); hp.type = "highpass";
+  const lp = c.createBiquadFilter(); lp.type = "lowpass";
+  shaper = c.createWaveShaper(); const comp = c.createDynamicsCompressor();
+  hp.connect(lp); lp.connect(shaper); shaper.connect(comp); comp.connect(master);
+  rxBus = hp; fx = { hp, lp };
+  const nb = c.createBuffer(1, c.sampleRate * 2, c.sampleRate), nd = nb.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  const ns = c.createBufferSource(); ns.buffer = nb; ns.loop = true;
+  const bp = c.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 2200; bp.Q.value = .6;
+  staticGain = c.createGain(); staticGain.gain.value = 0; ns.connect(bp); bp.connect(staticGain); staticGain.connect(master); ns.start();
+  applyAudio();
+}
+function applyAudio() {
+  if (!master) return;
+  master.gain.value = S.vol / 100;
+  fx.hp.frequency.value = S.fx ? 380 : 10; fx.lp.frequency.value = S.fx ? 2800 : 20000; shaper.curve = S.fx ? curve : null;
+}
+function setStatic(onOff) { if (staticGain) staticGain.gain.setTargetAtTime(onOff ? S.stat / 100 * .06 : 0, audioCtx.currentTime, .03); }
+function squelch() {
+  if (!staticGain || !S.stat) return; const t = audioCtx.currentTime;
+  staticGain.gain.cancelScheduledValues(t); staticGain.gain.setValueAtTime(S.stat / 100 * .2, t); staticGain.gain.setTargetAtTime(0, t + .07, .02);
+}
+const STYLES = { classic: { t: "square", g: .05, m: 1, sw: 0 }, soft: { t: "sine", g: .09, m: .8, sw: 0 }, digital: { t: "triangle", g: .08, m: 1.6, sw: 0 }, chirp: { t: "sawtooth", g: .035, m: 1, sw: 1 } };
+function beep(freq, ms, delay = 0, style = null, loud = false) {
   try {
-    const c = getCtx(), o = c.createOscillator(), g = c.createGain();
-    o.frequency.value = freq; o.type = "square"; g.gain.value = .05; o.connect(g); g.connect(c.destination);
-    const t = c.currentTime + delay; o.start(t); o.stop(t + ms / 1000);
+    const c = getCtx(), st = STYLES[style || S.beep] || STYLES.classic, o = c.createOscillator(), g = c.createGain(), t = c.currentTime + delay, f = freq * st.m;
+    o.type = st.t; g.gain.value = st.g * (loud ? 2.2 : 1);
+    if (st.sw) { o.frequency.setValueAtTime(f * .7, t); o.frequency.exponentialRampToValueAtTime(f * 1.3, t + ms / 1000); } else o.frequency.value = f;
+    o.connect(g); g.connect(master); o.start(t); o.stop(t + ms / 1000);
   } catch (e) {}
 }
 const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
@@ -222,6 +288,7 @@ async function join() {
   ready = false; lockPtt(); conn("Connecting…"); mode("idle", "TUNE", "Tuning in…");
   channel = sb.channel("pal-radio-" + ch, { config: { broadcast: { self: false }, presence: { key: myId } } });
   channel.on("broadcast", { event: "voice" }, ({ payload }) => receive(payload));
+  channel.on("broadcast", { event: "msg" }, ({ payload }) => receiveMsg(payload));
   channel.on("presence", { event: "sync" }, () => {
     const st = channel.presenceState();
     const people = Object.entries(st).map(([k, v]) => ({ n: (v[0] && v[0].name) || "Pal", me: k === myId }));
@@ -245,9 +312,9 @@ $("power").onclick = async () => {
     on = true; $("power").textContent = "Power off"; $("power").setAttribute("aria-pressed", true);
     beep(880, 90); beep(1320, 90, .1);
     try { localStorage.setItem("pl_name", name()); } catch (e) {}
-    await join();
+    keepAwake(); await join();
   } else {
-    on = false; $("power").textContent = "Power on"; $("power").setAttribute("aria-pressed", false); ready = false; rx.forEach(x => clearTimeout(x.timer)); rx.clear(); clearInterval(rxMeter); rxMeter = null; lockPtt();
+    on = false; allowSleep(); $("power").textContent = "Power on"; $("power").setAttribute("aria-pressed", false); ready = false; rx.forEach(x => clearTimeout(x.timer)); rx.clear(); clearInterval(rxMeter); rxMeter = null; lockPtt();
     if (channel) { await sb.removeChannel(channel); channel = null; }
     if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
     capturing = false; try { proc && proc.disconnect(); src && src.disconnect(); } catch (e) {} proc = src = analyser = null;
@@ -318,27 +385,70 @@ function receive(p) {
     let sum = 0; for (let i = 0; i < i16.length; i++) { d[i] = i16[i] / 32768; sum += d[i] * d[i]; }
     rxLevel = Math.min(1, Math.sqrt(sum / i16.length) * 5);
     if (s.next < c.currentTime) s.next = c.currentTime + JITTER;   // small jitter buffer
-    const n = c.createBufferSource(); n.buffer = buf; n.connect(c.destination); n.start(s.next); s.next += buf.duration;
+    const n = c.createBufferSource(); n.buffer = buf; n.connect(rxBus); n.start(s.next); s.next += buf.duration;
   }
   const wait = p.end ? Math.max(0, s.next - c.currentTime) * 1000 + 60 : 4000;   // 4 s safety if the end packet is lost
   s.timer = setTimeout(() => rxEnd(p.from), wait);
 }
 function rxStart(s) {
-  mode("rx", "RX", s.name + " is talking"); lockPtt(); beep(1200, 60); buzz(20);
+  mode("rx", "RX", s.name + " is talking"); lockPtt(); setStatic(true); beep(1200, 60); buzz(20);
   if (!rxMeter) rxMeter = setInterval(() => { rxLevel *= .88; meter(Math.min(1, rxLevel * (.7 + Math.random() * .6))); }, 80);
 }
 function rxEnd(id) {
   const s = rx.get(id); if (!s) return;
   rx.delete(id); lockPtt(); beep(900, 70); addLog(s.name, Date.now() - s.t0);
-  if (!rx.size) { clearInterval(rxMeter); rxMeter = null; meter(0); if (on && !talking) mode("idle", "READY", "Channel " + ch + " is open"); }
+  if (!rx.size) { setStatic(false); squelch(); clearInterval(rxMeter); rxMeter = null; meter(0); if (on && !talking) mode("idle", "READY", "Channel " + ch + " is open"); }
   else $("status").textContent = [...rx.values()][0].name + " is talking";
 }
-function addLog(who, ms) {
+function addLog(who, ms, text) {
   const ul = $("log"); if (ul.querySelector(".empty")) ul.innerHTML = "";
   const li = document.createElement("li");
-  li.innerHTML = avatar(who) + `<span>${esc(who)}</span><span class="t">${(ms / 1000).toFixed(1)}s · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>`;
+  li.innerHTML = avatar(who) + `<span>${esc(who)}${text ? ": " + esc(text) : ""}</span><span class="t">${text ? "" : (ms / 1000).toFixed(1) + "s · "}${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>`;
   ul.prepend(li); while (ul.children.length > 8) ul.lastChild.remove();
 }
+
+// ---- Quick messages and alerts ----
+function notice(text, force) {
+  if (!force && (rx.size || talking)) return;
+  $("status").textContent = text; clearTimeout(noteTimer);
+  noteTimer = setTimeout(() => { if (on && !rx.size && !talking) $("status").textContent = "Channel " + ch + " is open"; }, 5000);
+}
+function sendMsg(text, alert) {
+  if (!ready || !channel) return;
+  if (alert) { if (Date.now() - lastAlert < 4000) return; lastAlert = Date.now(); }
+  channel.send({ type: "broadcast", event: "msg", payload: { from: myId, name: name(), text, alert: !!alert } });
+  beep(700, 70); addLog("You", 0, (alert ? "ALERT · " : "") + text); notice(alert ? "Alert sent" : "Sent: " + text, true);
+}
+function playAlert() { for (let i = 0; i < 6; i++) beep(i % 2 ? 660 : 990, 220, i * .24, "classic", true); }
+function receiveMsg(p) {
+  if (!p || p.from === myId || !p.text) return;
+  const who = p.name || "Pal";
+  if (p.alert) {
+    playAlert(); buzz([300, 100, 300, 100, 300]); $("device").classList.add("alerting");
+    setTimeout(() => $("device").classList.remove("alerting"), 3200); notice("ALERT from " + who + "!", true);
+  } else { beep(1100, 70); beep(1500, 70, .09); buzz(30); notice(who + ": " + p.text); }
+  addLog(who, 0, (p.alert ? "ALERT · " : "") + p.text);
+}
+document.querySelectorAll(".q").forEach(b => b.onclick = () => sendMsg(b.dataset.t, false));
+$("alertBtn").onclick = () => sendMsg("Emergency alert", true);
+
+// ---- Keep screen awake ----
+async function keepAwake() {
+  try { if (on && "wakeLock" in navigator && !wl) { wl = await navigator.wakeLock.request("screen"); wl.addEventListener("release", () => { wl = null; }); } } catch (e) {}
+}
+function allowSleep() { try { wl && wl.release(); } catch (e) {} wl = null; }
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && on) { keepAwake(); if (audioCtx && audioCtx.state === "suspended") audioCtx.resume(); }
+});
+$("wakeNote").textContent = "wakeLock" in navigator ? "The screen stays on while the radio is on. Keep this tab open, because phones pause audio in the background." : "This browser can’t keep the screen on. Keep this tab open and the screen awake yourself.";
+
+// ---- Sound settings ----
+$("vol").value = S.vol; $("fx").checked = S.fx; $("stat").value = S.stat; $("beepSel").value = S.beep;
+$("vol").oninput = e => { S.vol = +e.target.value; applyAudio(); saveSet(); };
+$("fx").onchange = e => { S.fx = e.target.checked; applyAudio(); saveSet(); };
+$("stat").oninput = e => { S.stat = +e.target.value; saveSet(); };
+$("beepSel").onchange = e => { S.beep = e.target.value; saveSet(); beep(1000, 80); beep(1400, 80, .1); };
+$("test").onclick = () => { beep(1000, 80); beep(1400, 80, .1); };
 
 // ---- Push to talk inputs ----
 const btn = $("ptt");
