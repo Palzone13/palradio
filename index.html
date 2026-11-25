@@ -166,7 +166,12 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 let channel = null, ch = 1, on = false, stream = null, recStart = 0, recTimer = null, talking = false;
 let audioCtx = null, analyser = null, meterTimer = null, rxMeter = null, rxLevel = 0;
 let src = null, proc = null, capturing = false, seq = 0, outBuf = [], acc = 0, accN = 0, ph = 0;
-const rx = new Map();
+const rx = new Map(); let ready = false;
+function lockPtt() {
+  const busy = rx.size > 0 && !talking;
+  $("ptt").disabled = !ready || busy;
+  if (!talking) $("ptt").textContent = busy ? "Channel busy" : "Hold to talk";
+}
 
 // ---- UI helpers ----
 for (let i = 0; i < 10; i++) document.querySelector(".grille").appendChild(document.createElement("i"));
@@ -214,7 +219,7 @@ $("next").onclick = () => setChannel(ch === CHANNELS ? 1 : ch + 1);
 async function join() {
   rx.forEach(x => clearTimeout(x.timer)); rx.clear(); clearInterval(rxMeter);
   if (channel) { await sb.removeChannel(channel); channel = null; }
-  $("ptt").disabled = true; conn("Connecting…"); mode("idle", "TUNE", "Tuning in…");
+  ready = false; lockPtt(); conn("Connecting…"); mode("idle", "TUNE", "Tuning in…");
   channel = sb.channel("pal-radio-" + ch, { config: { broadcast: { self: false }, presence: { key: myId } } });
   channel.on("broadcast", { event: "voice" }, ({ payload }) => receive(payload));
   channel.on("presence", { event: "sync" }, () => {
@@ -226,9 +231,9 @@ async function join() {
   channel.subscribe(async status => {
     if (status === "SUBSCRIBED") {
       await channel.track({ name: name() });
-      conn("Connected", "ok"); mode("idle", "READY", "Channel " + ch + " is open"); $("ptt").disabled = false;
+      conn("Connected", "ok"); mode("idle", "READY", "Channel " + ch + " is open"); ready = true; lockPtt();
     } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-      conn("Error", "bad"); mode("off", "ERROR", "Can’t connect. Check Realtime is enabled."); $("ptt").disabled = true;
+      conn("Error", "bad"); mode("off", "ERROR", "Can’t connect. Check Realtime is enabled."); ready = false; lockPtt();
     }
   });
 }
@@ -242,7 +247,7 @@ $("power").onclick = async () => {
     try { localStorage.setItem("pl_name", name()); } catch (e) {}
     await join();
   } else {
-    on = false; $("power").textContent = "Power on"; $("power").setAttribute("aria-pressed", false); $("ptt").disabled = true;
+    on = false; $("power").textContent = "Power on"; $("power").setAttribute("aria-pressed", false); ready = false; rx.forEach(x => clearTimeout(x.timer)); rx.clear(); clearInterval(rxMeter); rxMeter = null; lockPtt();
     if (channel) { await sb.removeChannel(channel); channel = null; }
     if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
     capturing = false; try { proc && proc.disconnect(); src && src.disconnect(); } catch (e) {} proc = src = analyser = null;
@@ -295,7 +300,7 @@ function stopTx() {
   if (!talking) return;
   talking = false; capturing = false; clearTimeout(recTimer); clearInterval(meterTimer); meter(0);
   sendChunk(outBuf.splice(0), true);
-  $("ptt").classList.remove("live"); $("ptt").textContent = "Hold to talk";
+  $("ptt").classList.remove("live"); lockPtt();
   beep(700, 70); addLog("You", Date.now() - recStart);
   mode("idle", "READY", "Channel " + ch + " is open");
 }
@@ -319,12 +324,12 @@ function receive(p) {
   s.timer = setTimeout(() => rxEnd(p.from), wait);
 }
 function rxStart(s) {
-  mode("rx", "RX", s.name + " is talking"); beep(1200, 60); buzz(20);
+  mode("rx", "RX", s.name + " is talking"); lockPtt(); beep(1200, 60); buzz(20);
   if (!rxMeter) rxMeter = setInterval(() => { rxLevel *= .88; meter(Math.min(1, rxLevel * (.7 + Math.random() * .6))); }, 80);
 }
 function rxEnd(id) {
   const s = rx.get(id); if (!s) return;
-  rx.delete(id); beep(900, 70); addLog(s.name, Date.now() - s.t0);
+  rx.delete(id); lockPtt(); beep(900, 70); addLog(s.name, Date.now() - s.t0);
   if (!rx.size) { clearInterval(rxMeter); rxMeter = null; meter(0); if (on && !talking) mode("idle", "READY", "Channel " + ch + " is open"); }
   else $("status").textContent = [...rx.values()][0].name + " is talking";
 }
