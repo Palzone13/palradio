@@ -429,8 +429,21 @@ function sendMsg(text, level) {   // level: 0 message, 1 alert, 2 super alert
   if (level) { if (Date.now() - lastAlert < (level === 2 ? 10000 : 4000)) return; lastAlert = Date.now(); }
   channel.send({ type: "broadcast", event: "msg", payload: { from: myId, name: name(), text, alert: !!level, level } });
   addLog("You", 0, (level === 2 ? "SUPER ALERT · " : level ? "ALERT · " : "") + text);
-  if (level) fireAlert(level, "You"); else beep(700, 70);
+  if (level) fireAlert(level, "You"); else speakBeeps(text);
   notice(level === 2 ? "Super alert sent" : level ? "Alert sent" : "Sent: " + text, true);
+}
+
+// ---- Spoken-style beeps: one beep per syllable, pitch follows the stress ----
+const SPEAK = {
+  "On my way": [[700, 100], [700, 100], [1000, 260]],   // on-my-WAY
+  "Copy that": [[1000, 140], [760, 100], [860, 230]],   // CO-py THAT
+  "Say again": [[800, 140], [700, 90], [1050, 270]],    // say a-GAIN
+  "Need help": [[1200, 150], [900, 240]]                // NEED HELP
+};
+function speakBeeps(text) {
+  const seq = SPEAK[text];
+  if (!seq) { beep(1100, 70); beep(1500, 70, .09); return; }
+  let d = 0; for (const [f, ms] of seq) { beep(f, ms, d); d += (ms + 70) / 1000; }
 }
 
 // ---- Alert sounds ----
@@ -475,7 +488,7 @@ function receiveMsg(p) {
   if (!p || p.from === myId || !p.text) return;
   const who = p.name || "Pal", lvl = p.level || (p.alert ? 1 : 0);
   if (lvl) { fireAlert(lvl, who); notice((lvl === 2 ? "SUPER ALERT" : "ALERT") + " from " + who + "!", true); }
-  else { beep(1100, 70); beep(1500, 70, .09); buzz(30); notice(who + ": " + p.text); }
+  else { speakBeeps(p.text); buzz(30); notice(who + ": " + p.text); }
   addLog(who, 0, (lvl === 2 ? "SUPER ALERT · " : lvl ? "ALERT · " : "") + p.text);
 }
 document.querySelectorAll(".q").forEach(b => b.onclick = () => sendMsg(b.dataset.t, 0));
