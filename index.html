@@ -139,7 +139,7 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
     <div class="bay"><button class="ptt" id="ptt" disabled>Hold to talk</button></div>
 
     <input class="name" id="callsign" maxlength="16" placeholder="Your callsign" aria-label="Your callsign">
-    <p class="hint">Space bar works too. Clips run up to 15 seconds.</p>
+    <p class="hint">Live while you hold the button. Space bar works too.</p>
   </main>
 
   <aside class="side">
@@ -158,14 +158,15 @@ button:focus-visible,input:focus-visible{outline:3px solid #6a4cff;outline-offse
 const SUPABASE_URL = "https://rggwinuwwlwusianmdsv.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJnZ3dpbnV3d2x3dXNpYW5tZHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU2Mjg2MDEsImV4cCI6MjExMTIwNDYwMX0.JoLtu9dSsJI5mdwNvjVm34DOJR2lwnGHjyiBJb2lWqk";
 
-const MAX_MS = 15000, MIN_MS = 350, CHANNELS = 8;
+const MAX_MS = 60000, CHANNELS = 8, SR = 16000, CHUNK = 4000, JITTER = 0.3; // 16 kHz voice, 250 ms packets
 const $ = id => document.getElementById(id);
 const myId = Math.random().toString(36).slice(2, 10);
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-let channel = null, ch = 1, on = false, stream = null, rec = null, chunks = [], recStart = 0, recTimer = null, talking = false;
-let audioCtx = null, analyser = null, meterTimer = null;
-const playQueue = []; let playing = false;
+let channel = null, ch = 1, on = false, stream = null, recStart = 0, recTimer = null, talking = false;
+let audioCtx = null, analyser = null, meterTimer = null, rxMeter = null, rxLevel = 0;
+let src = null, proc = null, capturing = false, seq = 0, outBuf = [], acc = 0, accN = 0, ph = 0;
+const rx = new Map();
 
 // ---- UI helpers ----
 for (let i = 0; i < 10; i++) document.querySelector(".grille").appendChild(document.createElement("i"));
@@ -211,6 +212,7 @@ $("prev").onclick = () => setChannel(ch === 1 ? CHANNELS : ch - 1);
 $("next").onclick = () => setChannel(ch === CHANNELS ? 1 : ch + 1);
 
 async function join() {
+  rx.forEach(x => clearTimeout(x.timer)); rx.clear(); clearInterval(rxMeter);
   if (channel) { await sb.removeChannel(channel); channel = null; }
   $("ptt").disabled = true; conn("Connecting…"); mode("idle", "TUNE", "Tuning in…");
   channel = sb.channel("pal-radio-" + ch, { config: { broadcast: { self: false }, presence: { key: myId } } });
@@ -242,58 +244,89 @@ $("power").onclick = async () => {
   } else {
     on = false; $("power").textContent = "Power on"; $("power").setAttribute("aria-pressed", false); $("ptt").disabled = true;
     if (channel) { await sb.removeChannel(channel); channel = null; }
-    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; analyser = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    capturing = false; try { proc && proc.disconnect(); src && src.disconnect(); } catch (e) {} proc = src = analyser = null;
     conn("Offline"); mode("off", "OFF", "Radio is off"); $("who").textContent = ""; meter(0);
     $("roster").innerHTML = '<li class="empty">Nobody yet. Power on to join.</li>'; $("count").textContent = "";
   }
 };
 
-// ---- Transmit ----
-function startTx() {
-  if (!on || talking || !channel || !stream || playing) return;
-  const mt = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
-  try { rec = new MediaRecorder(stream, mt ? { mimeType: mt, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 }); }
-  catch (e) { mode("idle", "ERROR", "This browser can’t record audio."); return; }
-  chunks = []; talking = true; recStart = Date.now();
-  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
-  rec.onstop = sendClip; rec.start();
-  $("ptt").classList.add("live"); $("ptt").textContent = "Talking…"; mode("tx", "TX", "Transmitting…"); beep(1000, 60); buzz(25);
+// ---- Transmit (live) ----
+function setupCapture() {
+  if (src) return;
   const c = getCtx();
-  if (!analyser) { analyser = c.createAnalyser(); analyser.fftSize = 256; c.createMediaStreamSource(stream).connect(analyser); }
+  src = c.createMediaStreamSource(stream);
+  analyser = c.createAnalyser(); analyser.fftSize = 256; src.connect(analyser);
+  proc = c.createScriptProcessor(2048, 1, 1);
+  const mute = c.createGain(); mute.gain.value = 0;
+  proc.onaudioprocess = e => {
+    if (!capturing) return;
+    const x = e.inputBuffer.getChannelData(0), ratio = c.sampleRate / SR;
+    for (let i = 0; i < x.length; i++) {            // average-downsample to 16 kHz
+      acc += x[i]; accN++; ph++;
+      if (ph >= ratio) { outBuf.push(acc / accN); acc = 0; accN = 0; ph -= ratio; }
+    }
+    while (outBuf.length >= CHUNK) sendChunk(outBuf.splice(0, CHUNK), false);
+  };
+  src.connect(proc); proc.connect(mute); mute.connect(c.destination);
+}
+function sendChunk(f, end) {
+  let pcm = "";
+  if (f.length) {
+    const i16 = new Int16Array(f.length);
+    for (let i = 0; i < f.length; i++) i16[i] = Math.max(-1, Math.min(1, f[i])) * 32767;
+    const u8 = new Uint8Array(i16.buffer); let bin = "";
+    for (let i = 0; i < u8.length; i += 4096) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 4096));
+    pcm = btoa(bin);
+  }
+  if (channel) channel.send({ type: "broadcast", event: "voice", payload: { from: myId, name: name(), seq: seq++, sr: SR, pcm, end } });
+}
+function startTx() {
+  if (!on || talking || !channel || !stream || rx.size) return;
+  setupCapture(); getCtx();
+  outBuf = []; acc = accN = ph = 0; seq = 0; talking = true; recStart = Date.now();
+  $("ptt").classList.add("live"); $("ptt").textContent = "Live"; mode("tx", "TX", "You’re live"); beep(1000, 60); buzz(25);
+  setTimeout(() => { capturing = talking; }, 130);     // skip our own start beep
   const d = new Uint8Array(analyser.fftSize);
   meterTimer = setInterval(() => { analyser.getByteTimeDomainData(d); let m = 0; for (const v of d) m = Math.max(m, Math.abs(v - 128)); meter(Math.min(1, m / 60)); }, 60);
   recTimer = setTimeout(stopTx, MAX_MS);
 }
 function stopTx() {
   if (!talking) return;
-  talking = false; clearTimeout(recTimer); clearInterval(meterTimer); meter(0);
+  talking = false; capturing = false; clearTimeout(recTimer); clearInterval(meterTimer); meter(0);
+  sendChunk(outBuf.splice(0), true);
   $("ptt").classList.remove("live"); $("ptt").textContent = "Hold to talk";
-  try { rec.stop(); } catch (e) {}
-}
-function sendClip() {
-  const ms = Date.now() - recStart;
+  beep(700, 70); addLog("You", Date.now() - recStart);
   mode("idle", "READY", "Channel " + ch + " is open");
-  if (ms < MIN_MS || !chunks.length) { $("status").textContent = "Too short. Hold while you talk."; return; }
-  const type = rec.mimeType || "audio/webm", fr = new FileReader();
-  fr.onload = async () => {
-    const res = await channel.send({ type: "broadcast", event: "voice", payload: { from: myId, name: name(), audio: String(fr.result).split(",")[1], mime: type, ms } });
-    beep(700, 70);
-    if (res === "ok") addLog("You", ms); else $("status").textContent = "Didn’t send. Try again.";
-  };
-  fr.readAsDataURL(new Blob(chunks, { type }));
 }
 
-// ---- Receive ----
-function receive(p) { if (p && p.audio) { playQueue.push(p); if (!playing) playNext(); } }
-function playNext() {
-  const p = playQueue.shift();
-  if (!p) { playing = false; clearInterval(meterTimer); meter(0); if (on) mode("idle", "READY", "Channel " + ch + " is open"); return; }
-  playing = true; mode("rx", "RX", (p.name || "Pal") + " is talking"); beep(1200, 60); buzz(20);
-  clearInterval(meterTimer); meterTimer = setInterval(() => meter(.25 + Math.random() * .7), 90);
-  const a = new Audio("data:" + p.mime + ";base64," + p.audio);
-  a.onended = () => { beep(900, 70); addLog(p.name || "Pal", p.ms); playNext(); };
-  a.onerror = () => playNext();
-  a.play().catch(() => { $("status").textContent = "Tap the page to enable sound"; playNext(); });
+// ---- Receive (live) ----
+function receive(p) {
+  if (!p || p.from === myId) return;
+  const c = getCtx(); let s = rx.get(p.from);
+  if (!s) { s = { name: p.name || "Pal", next: 0, t0: Date.now(), timer: null }; rx.set(p.from, s); rxStart(s); }
+  clearTimeout(s.timer);
+  if (p.pcm) {
+    const bin = atob(p.pcm), u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const i16 = new Int16Array(u8.buffer), buf = c.createBuffer(1, i16.length, p.sr || SR), d = buf.getChannelData(0);
+    let sum = 0; for (let i = 0; i < i16.length; i++) { d[i] = i16[i] / 32768; sum += d[i] * d[i]; }
+    rxLevel = Math.min(1, Math.sqrt(sum / i16.length) * 5);
+    if (s.next < c.currentTime) s.next = c.currentTime + JITTER;   // small jitter buffer
+    const n = c.createBufferSource(); n.buffer = buf; n.connect(c.destination); n.start(s.next); s.next += buf.duration;
+  }
+  const wait = p.end ? Math.max(0, s.next - c.currentTime) * 1000 + 60 : 4000;   // 4 s safety if the end packet is lost
+  s.timer = setTimeout(() => rxEnd(p.from), wait);
+}
+function rxStart(s) {
+  mode("rx", "RX", s.name + " is talking"); beep(1200, 60); buzz(20);
+  if (!rxMeter) rxMeter = setInterval(() => { rxLevel *= .88; meter(Math.min(1, rxLevel * (.7 + Math.random() * .6))); }, 80);
+}
+function rxEnd(id) {
+  const s = rx.get(id); if (!s) return;
+  rx.delete(id); beep(900, 70); addLog(s.name, Date.now() - s.t0);
+  if (!rx.size) { clearInterval(rxMeter); rxMeter = null; meter(0); if (on && !talking) mode("idle", "READY", "Channel " + ch + " is open"); }
+  else $("status").textContent = [...rx.values()][0].name + " is talking";
 }
 function addLog(who, ms) {
   const ul = $("log"); if (ul.querySelector(".empty")) ul.innerHTML = "";
