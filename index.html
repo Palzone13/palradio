@@ -419,7 +419,21 @@ function sendMsg(text, alert) {
   channel.send({ type: "broadcast", event: "msg", payload: { from: myId, name: name(), text, alert: !!alert } });
   beep(700, 70); addLog("You", 0, (alert ? "ALERT · " : "") + text); notice(alert ? "Alert sent" : "Sent: " + text, true);
 }
-function playAlert() { for (let i = 0; i < 6; i++) beep(i % 2 ? 660 : 990, 220, i * .24, "classic", true); }
+function playAlert() {   // three rising siren whoops, then four fast pips
+  try {
+    const c = getCtx(), t0 = c.currentTime + .02;
+    const tone = (type, t, dur, f0, f1, vol) => {
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = type; o.frequency.setValueAtTime(f0, t);
+      if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + .03);
+      g.gain.setValueAtTime(vol, t + dur - .06); g.gain.linearRampToValueAtTime(0, t + dur);
+      o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + .02);
+    };
+    for (let i = 0; i < 3; i++) tone("sawtooth", t0 + i * .62, .56, 500, 1500, .18);
+    for (let i = 0; i < 4; i++) tone("square", t0 + 1.95 + i * .13, .08, 1900, 1900, .12);
+  } catch (e) {}
+}
 function receiveMsg(p) {
   if (!p || p.from === myId || !p.text) return;
   const who = p.name || "Pal";
